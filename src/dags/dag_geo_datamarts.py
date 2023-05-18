@@ -21,22 +21,22 @@ dag_spark = DAG(
     schedule_interval=None
 )
 
-# dm_users = SparkSubmitOperator(
-#     task_id = 'dm_users',
-#     dag = dag_spark,
-#     application = '/lessons/datamart_users.py',
-#     conn_id= 'yarn_spark',
-#     application_args = [ 
-#         "/user/johnafv/data/geo/events_light/", 
-#         "/user/johnafv/data/geo/geo.csv", 
-#         "/user/johnafv/prod/datamart_userы/"
-#         ],
-#     conf={
-#         "spark.driver.maxResultSize": "20g"
-#     },
-#     executor_cores = 1,
-#     executor_memory = '1g'
-# )
+dm_users = SparkSubmitOperator(
+    task_id = 'dm_users',
+    dag = dag_spark,
+    application = '/lessons/datamart_users.py',
+    conn_id= 'yarn_spark',
+    application_args = [ 
+        "/user/johnafv/project_7/events_sample", 
+        "/user/johnafv/project_7/geo", 
+        "/user/johnafv/project_7/marts/mart_users"
+        ],
+    conf={
+        "spark.driver.maxResultSize": "20g"
+    },
+    executor_cores = 2,
+    executor_memory = '1g'
+)
 
 # dm_zones = SparkSubmitOperator(
 #     task_id = 'dm_zones',
@@ -55,21 +55,21 @@ dag_spark = DAG(
 #     executor_memory = '1g'
 # )
 
-dm_friends_recomendation = SparkSubmitOperator(
-    task_id = 'dm_friends_recomendation',
-    dag = dag_spark,
-    application = '/lessons/datamart_friends_recomendation.py',
-    conn_id= 'yarn_spark',
-    application_args = [ 
-        "/user/johnafv/data/geo/events_light/", 
-        "/user/johnafv/data/geo/geo.csv", 
-        "/user/johnafv/prod/datamart_friends_recomendation/"
-        ],
-    conf={
-        "spark.driver.maxResultSize": "20g"
-    },
-    executor_cores = 1,
-    executor_memory = '1g'
-)
+# dm_friends_recomendation = SparkSubmitOperator(
+#     task_id = 'dm_friends_recomendation',
+#     dag = dag_spark,
+#     application = '/lessons/datamart_friends_recomendation.py',
+#     conn_id= 'yarn_spark',
+#     application_args = [ 
+#         "/user/johnafv/data/geo/events_light/", 
+#         "/user/johnafv/data/geo/geo.csv", 
+#         "/user/johnafv/prod/datamart_friends_recomendation/"
+#         ],
+#     conf={
+#         "spark.driver.maxResultSize": "20g"
+#     },
+#     executor_cores = 1,
+#     executor_memory = '1g'
+# )
 
 
