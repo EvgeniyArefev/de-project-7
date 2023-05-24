@@ -18,21 +18,18 @@ def main():
     sql = SQLContext(sc)
 
     cities_df = cities(path_geo_cities, sql)
-    events_message_from_df = events_message_from(path_events, sql)
-    events_message_to_df = events_message_to(path_events, sql)
-    events_subscriptions_df = events_subscriptions(path_events, sql)
-    events_union_sender_reciever_df = events_union_sender_reciever(path_events, sql)
-    mart_firends_recomenadtion_df = mart_firends_recomenadtion(
-        events_message_from_df, 
-        events_message_to_df, 
-        cities_df,
-        events_union_sender_reciever_df,
-        events_subscriptions_df
-        )
-    write = writer(mart_firends_recomenadtion_df, path_to_write)
+    user_subscription_channels_df = user_subscription_channels(path_events, sql)
+    user_message_from_df = user_message_from(path_events, sql, user_subscription_channels_df)
+    user_message_to_df = user_message_to(path_events, sql, user_subscription_channels_df)
+    combinations_sender_receiver_df = combinations_sender_receiver(path_events, sql)
+    mart_friends_recomendation_df = mart_friends_recomendation(user_message_from_df, 
+                                                               user_message_to_df, 
+                                                               combinations_sender_receiver_df, 
+                                                               cities_df)
+
+    write = writer(mart_friends_recomendation_df, path_to_write)
 
     return write
-
 
 def cities(path, session):
     cities_df = session.read \
@@ -41,179 +38,147 @@ def cities(path, session):
         .csv(path) \
         .withColumn('lat_rad', F.regexp_replace('lat', ',', '.') * F.lit(COEF_DEG_RAD)) \
         .withColumn('lng_rad', F.regexp_replace('lng', ',', '.') * F.lit(COEF_DEG_RAD)) \
-        .drop('lat', 'lng') \
-        .persist()
+        .drop('lat', 'lng')
     
     return cities_df
 
-def events_message_from(path, session):
-    events_message_from_df = session.read.parquet(path) \
-        .where('event_type = "message"') \
-        .selectExpr(
-            "event.message_id as message_id_from", 
-            "event.message_from",     
-            "event.subscription_channel",
-            "lat", 
-            "lon", 
-            "date"
-        ) \
-        .withColumn('msg_lat_rad_from', F.col('lat') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('msg_lng_rad_from', F.col('lon') * F.lit(COEF_DEG_RAD)) \
-        .where("message_from IS NOT NULL") \
-        .drop('lat', 'lon') \
-        .persist() 
-    
-    window = Window().partitionBy('message_from').orderBy(F.col('date').desc())
-
-    events_message_from_df = events_message_from_df \
-        .withColumn("row_number", F.row_number().over(window)) \
-        .filter(F.col('row_number')==1) \
-        .drop("row_number") \
+def user_subscription_channels(path, session):
+    user_subscription_channels_df = session.read.parquet(f'{path}') \
+        .selectExpr('event.user as user_id', 'event.subscription_channel') \
+        .where('user_id is not null and subscription_channel is not null') \
+        .groupBy('user_id') \
+        .agg(F.collect_list('subscription_channel').alias('sub_channels')) \
         .persist()
+        
     
-    return events_message_from_df
+    return user_subscription_channels_df
 
-def events_message_to(path, session):
-    events_message_to_df = session.read.parquet(path) \
-        .where('event_type = "message"') \
-        .selectExpr(
-            "event.message_id as message_id_to", 
-            "event.message_to",     
-            "event.subscription_channel",
-            "lat", 
-            "lon", 
-            "date"
-        ) \
-        .withColumn('msg_lat_rad_to', F.col('lat') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('msg_lng_rad_to', F.col('lon') * F.lit(COEF_DEG_RAD)) \
-        .where("message_to IS NOT NULL") \
-        .drop('lat', 'lon') \
-        .persist() 
+def user_message_from(path, session, df_with_sub_channels):
+    window = Window().partitionBy('user_msg_from').orderBy(F.col('date').desc(), F.col('message_id').desc())
     
-    window = Window().partitionBy('message_to').orderBy(F.col('date').desc())
-
-    events_message_to_df = events_message_to_df \
-        .withColumn("row_number", F.row_number().over(window)) \
-        .filter(F.col('row_number')==1) \
-        .drop("row_number") \
+    user_message_from_df = session.read.parquet(f'{path}/event_type=message') \
+        .selectExpr('event.message_from as user_msg_from', 'event.message_id', 'date', 'lat', 'lon') \
+        .withColumn('lat_msg_from', F.col('lat') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('lng_msg_from', F.col('lon') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('rn', F.row_number().over(window)) \
+        .where('rn = 1') \
+        .select('user_msg_from', 'lat_msg_from', 'lng_msg_from')
+    
+    user_message_from_df = user_message_from_df \
+        .join(df_with_sub_channels, 
+              user_message_from_df.user_msg_from == df_with_sub_channels.user_id, 
+              'left') \
+        .withColumnRenamed('sub_channels', 'sub_channels_user_from') \
+        .drop('user_id') \
         .persist()
-    
-    return events_message_to_df
+        
 
-def events_subscriptions(path, session):
-    events_subscriptions_df = session.read.parquet(path) \
-        .selectExpr(
-            'event.user as user', 
-            'event.subscription_channel as channel'
-        ) \
-        .where('user is not null and channel is not null') \
-        .groupBy('user').agg(F.collect_list(F.col('channel')).alias('channels')) \
+    return user_message_from_df
+
+def user_message_to(path, session, df_with_sub_channels):
+    window = Window().partitionBy('user_msg_to').orderBy(F.col('date').desc(), F.col('message_id').desc())
+    
+    user_message_to_df = session.read.parquet(f'{path}/event_type=message') \
+        .selectExpr('event.message_to as user_msg_to', 'event.message_id', 'date', 'lat', 'lon') \
+        .withColumn('lat_msg_to', F.col('lat') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('lng_msg_to', F.col('lon') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('rn', F.row_number().over(window)) \
+        .where('rn = 1') \
+        .select('user_msg_to', 'lat_msg_to', 'lng_msg_to')
+    
+    user_message_to_df = user_message_to_df \
+        .join(df_with_sub_channels, 
+              user_message_to_df.user_msg_to == df_with_sub_channels.user_id, 
+              'left') \
+        .withColumnRenamed('sub_channels', 'sub_channels_user_to') \
+        .drop('user_id') \
         .persist()
-    
-    return events_subscriptions_df
 
-def events_union_sender_reciever(path_events, session):
-    sender_reciever_df = session.read.parquet(path_events) \
-        .selectExpr('event.message_from as sender','event.message_to as reciever') \
-        .where('sender is not null and reciever is not null')
-    
-    reciever_sender_df = session.read.parquet(path_events) \
-        .selectExpr('event.message_to as reciever','event.message_from as sender') \
-        .where('sender is not null and reciever is not null')
-    
-    events_union_sender_reciever_df = sender_reciever_df \
-        .union(reciever_sender_df) \
-        .withColumn('sender_reciever', F.concat(F.col('sender'), F.lit("-") , F.col('reciever'))) \
-        .drop('sender', 'reciever') \
+    return user_message_to_df
+
+def combinations_sender_receiver(path, session):
+    combinations_sender_receiver_df = session.read.parquet(f'{path}/event_type=message') \
+        .selectExpr('event.message_from as user_right','event.message_to as user_left') \
+        .union(
+            session.read.parquet(f'{path}/event_type=message')
+            .selectExpr('event.message_to as user_right','event.message_from as user_left')
+        ) \
+        .where('user_right is not null and user_left is not null') \
         .distinct() \
+        .withColumn('users_comb', F.trim(F.concat(F.col('user_right'), F.lit('-'), F.col('user_left')))) \
+        .drop('user_right', 'user_left') \
+        .persist()
     
-    return events_union_sender_reciever_df
+    return combinations_sender_receiver_df
 
-def mart_firends_recomenadtion(events_message_from_df, 
-                               events_message_to_df, 
-                               cities_df,
-                               events_union_sender_reciever_df,
-                               events_subscriptions_df
-                              ):
+def mart_friends_recomendation(user_message_from_df, 
+                               user_message_to_df, 
+                               combinations_sender_receiver_df, 
+                               cities_df):
     
-    # Все возможные комбинации отправлителя и получателя
-    mart_firends_recomenadtion_df = events_message_from_df.crossJoin(events_message_to_df) \
-        .withColumn("distance", F.lit(2) * F.lit(6371) * F.asin(
-            F.sqrt(
-            F.pow(F.sin((F.col('msg_lat_rad_from') - F.col('msg_lat_rad_to'))/F.lit(2)),2)
-            + F.cos(F.col("msg_lat_rad_from"))*F.cos(F.col("msg_lat_rad_to"))*
-            F.pow(F.sin((F.col('msg_lng_rad_from') - F.col('msg_lng_rad_to'))/F.lit(2)),2)
+    #пользователи подписаны на один канал
+    mart_friends_recomendation_df = user_message_from_df \
+        .crossJoin(user_message_to_df) \
+        .withColumn('inter_channels', F.array_intersect(F.col('sub_channels_user_from'), F.col('sub_channels_user_to'))) \
+        .drop('sub_channels_user_from', 'sub_channels_user_to') \
+        .filter(F.size(F.col('inter_channels'))>=1) \
+        .drop('inter_channels')
+    
+     #оставляем пользователей, которые ранее никогда не переписывались
+    mart_friends_recomendation_df = mart_friends_recomendation_df \
+        .withColumn('users_comb', F.trim(F.concat(F.col('user_msg_from'), F.lit('-'), F.col('user_msg_to')))) \
+        .join(combinations_sender_receiver_df, 'users_comb', 'leftanti')
+    
+    #расстояние между пользователями не превышает 1 км
+    mart_friends_recomendation_df = mart_friends_recomendation_df \
+        .withColumn('distance_between_users',
+            F.lit(2) * F.lit(6371) * F.asin(
+                F.sqrt(
+                    F.pow(F.sin((F.col('lat_msg_from') - F.col('lat_msg_to')) / F.lit(2)), 2)
+                    + F.cos(F.col("lat_msg_from")) * F.cos(F.col("lat_msg_to")) 
+                    * F.pow(F.sin((F.col('lng_msg_from') - F.col('lng_msg_to')) / F.lit(2)),2)
+                )
+            )
+        ) \
+        .where('distance_between_users <= 1') \
+        .drop('distance_between_users')
+    
+     #уточняем идентификатор зоны (города)
+    window = Window().partitionBy('users_comb').orderBy(F.col('distance').desc())
+    
+    mart_friends_recomendation_df = mart_friends_recomendation_df \
+        .withColumn('middle_point_lat_rad', (F.col('lat_msg_from') + F.col('lat_msg_to'))/F.lit(2)) \
+        .withColumn('middle_point_lng_rad', (F.col('lng_msg_from') + F.col('lng_msg_to'))/F.lit(2)) \
+        .drop('lat_msg_from', 'lng_msg_from', 'lat_msg_to', 'lng_msg_to') \
+        .crossJoin(cities_df) \
+        .withColumn('distance',
+            F.lit(2) * F.lit(6371) * F.asin(F.sqrt(
+                F.pow(F.sin((F.col('middle_point_lat_rad') - F.col('lat_rad'))/F.lit(2)), 2)
+                + F.cos(F.col("middle_point_lat_rad")) * F.cos(F.col("lat_rad")) 
+                * F.pow(F.sin((F.col('middle_point_lng_rad') - F.col('lng_rad'))/F.lit(2)),2)
             ))
         ) \
-        .where("distance <= 1") \
-        .withColumn("middle_point_lat_rad", (F.col('msg_lat_rad_from') + F.col('msg_lat_rad_to'))/F.lit(2)) \
-        .withColumn("middle_point_lng_rad", (F.col('msg_lng_rad_from') + F.col('msg_lng_rad_to'))/F.lit(2)) \
-        .selectExpr(
-            "message_id_from as user_left", 
-            "message_id_to as user_right",
-            "middle_point_lat_rad", 
-            "middle_point_lng_rad"
-        ) \
-        .distinct() \
+        .withColumn('rn', F.row_number().over(window)) \
+        .where('rn = 1')
+    
+    #выводим нужные для аналитики поля
+    #не вывожу local_time так как может выдавать ошибку, если таймзоны нет в функции from_utc_timestamp
+    mart_friends_recomendation_df = mart_friends_recomendation_df\
+        .withColumn('current_dttm', F.current_timestamp()) \
+        .withColumn('timezone', F.concat(F.lit('Australia/'), F.col('city'))) \
+        .selectExpr('user_msg_from as user_left', 
+                    'user_msg_to as user_right', 
+                    'current_dttm as processed_dttm', 
+                    'city as zone_id') \
         .persist()
-    
-    # Добавляем информацию по городу
-    window = Window().partitionBy("user_left", "user_right").orderBy(F.col('distance').asc())
-
-    mart_firends_recomenadtion_df = mart_firends_recomenadtion_df \
-            .crossJoin(cities_df) \
-            .withColumn("distance", F.lit(2) * F.lit(6371) * F.asin(
-            F.sqrt(
-                F.pow(F.sin((F.col('middle_point_lat_rad') - F.col('lat_rad'))/F.lit(2)),2)
-                + F.cos(F.col("middle_point_lat_rad"))*F.cos(F.col("lat_rad"))*
-                F.pow(F.sin((F.col('middle_point_lng_rad') - F.col('lng_rad'))/F.lit(2)),2)
-                ))
-            ) \
-            .withColumn("row_number", F.row_number().over(window)) \
-            .filter(F.col('row_number') == 1) \
-            .withColumn("timezone",F.concat(F.lit("Australia/"),F.col('city'))) \
-            .withColumnRenamed("city", "zone_id") \
-            .withColumn('sender_reciever_combine', F.concat(F.col('user_left'), F.lit('-'), F.col('user_right'))) \
-            .select("user_left", "user_right", "id", "zone_id", "distance", 'sender_reciever_combine')
-    
-    # Убираем тех, кто уже общался друг с другом
-    mart_firends_recomenadtion_df = mart_firends_recomenadtion_df \
-        .join(
-            events_union_sender_reciever_df,
-            mart_firends_recomenadtion_df.sender_reciever_combine == events_union_sender_reciever_df.sender_reciever,
-            'leftanti'
-        )
-    
-    # Рекомендации пользователям
-    mart_firends_recomenadtion_df = mart_firends_recomenadtion_df \
-        .join(events_subscriptions_df, 
-              mart_firends_recomenadtion_df.user_left == events_subscriptions_df.user,
-             'left'
-        ) \
-        .withColumnRenamed('channels', 'channels_left') \
-        .drop('user') \
-        .join(events_subscriptions_df, 
-              mart_firends_recomenadtion_df.user_right == events_subscriptions_df.user,
-             'left'
-        ) \
-        .withColumnRenamed('channels', 'channels_right') \
-        .drop('user') \
-        .withColumn('intersect_channels', F.array_intersect(F.col('channels_left'), F.col('channels_right'))) \
-        .filter(F.size(F.col("intersect_channels")) >= 1) \
-        .where('user_left <> user_right') \
-        .withColumn("processed_dttm", F.current_timestamp()) \
-        .withColumn("timezone",F.concat(F.lit("Australia/"),F.col('zone_id'))) \
-        .select('user_left', 'user_right', 'processed_dttm', 'zone_id') \
-        .persist()
-            
-    return mart_firends_recomenadtion_df
+        
+    return mart_friends_recomendation_df
 
 def writer(df, output_path):
     return df \
         .write \
         .mode('overwrite') \
-        .parquet(output_path)
-
+        .parquet(f'{output_path}')
 
 if __name__ == "__main__":
     main()
