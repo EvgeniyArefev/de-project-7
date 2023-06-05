@@ -6,9 +6,6 @@ import pyspark.sql.functions as F
 from pyspark.sql.window import Window 
 from pyspark.sql.types import DateType
 
-PI = 3.14159265359
-COEF_DEG_RAD = PI / 180
-
 def main():
     path_events = sys.argv[1]
     path_geo_cities = sys.argv[2]
@@ -35,8 +32,8 @@ def cities(path, session):
         .option('header', True) \
         .option('delimiter', ';') \
         .csv(path) \
-        .withColumn('lat_rad', F.regexp_replace('lat', ',', '.') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('lng_rad', F.regexp_replace('lng', ',', '.') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('lat_rad',  F.radians(F.regexp_replace('lat', ',', '.'))) \
+        .withColumn('lng_rad', F.radians(F.regexp_replace('lng', ',', '.'))) \
         .drop('lat', 'lng')
     
     return cities_df
@@ -50,8 +47,8 @@ def events(path, session):
                     "lat", 
                     "lon") \
         .where("user_id is not null") \
-        .withColumn('msg_lat_rad', F.col('lat') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('msg_lng_rad', F.col('lon') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('msg_lat_rad', F.radians(F.col('lat'))) \
+        .withColumn('msg_lng_rad', F.radians(F.col('lon'))) \
         .drop('lat', 'lon') 
     
     return events_df
@@ -63,8 +60,7 @@ def events_geo(events_df, cities_df):
         .withColumn('distance',
             F.lit(2) * F.lit(6371) * F.asin(F.sqrt(
                 F.pow(F.sin((F.col('msg_lat_rad') - F.col('lat_rad'))/F.lit(2)), 2)
-                + F.cos(F.col("msg_lat_rad")) 
-                * F.cos(F.col("lat_rad")) 
+                + F.cos(F.col("msg_lat_rad")) * F.cos(F.col("lat_rad")) 
                 * F.pow(F.sin((F.col('msg_lng_rad') - F.col('lng_rad'))/F.lit(2)),2)
             ))
         ) \
@@ -90,22 +86,30 @@ def actual_city(events_geo_df):
     return actual_city_df
 
 def home_city(events_geo_df):
-    window_lag = Window().partitionBy('user_id', 'city').orderBy(F.col('date'))
-    window_rn = Window().partitionBy('user_id', 'city', 'ddif').orderBy(F.col('date'))
-    window_max = Window.partitionBy('user_id')
-    
+    window = Window().partitionBy('user_id', 'date', 'city').orderBy('message_id')
+    window_2 = Window().partitionBy('user_id').orderBy('date', 'message_id')
+    window_3 = Window().partitionBy('user_id').orderBy(F.col('date').desc(), F.col('message_id').desc())
+
     home_city_df = events_geo_df \
-        .selectExpr('user_id', 'date', 'city') \
-        .distinct() \
-        .withColumn('lag', F.lag('date', offset=1, default=None).over(window_lag)) \
-        .withColumn('ddif', F.datediff(F.col('date').cast(DateType()), F.col('lag').cast(DateType()))) \
-        .withColumn('ddif', F.when(F.col('ddif').isNull(), 1).otherwise(F.col('ddif'))) \
-        .withColumn('rn', F.row_number().over(window_rn)) \
-        .where('rn >= 10') \
-        .selectExpr('user_id', 'date', 'city', 'rn') \
-        .withColumn('max_date', F.max('date').over(window_max)) \
-        .withColumn('max_rn', F.max('rn').over(window_max)) \
-        .where('date = max_date and rn = max_rn') \
+        .selectExpr('user_id', 'date', 'message_id', 'city') \
+        .withColumn('rn', F.row_number().over(window)) \
+        .where('rn = 1') \
+        .drop('rn') \
+        .withColumn('max_msg_date', F.max('date').over(Window().partitionBy('user_id'))) \
+        .withColumn('prev_city', F.lag('city', offset = 1).over(window_2)) \
+        .where('prev_city is null or city != prev_city') \
+        .withColumn('dt_of_city_change', F.lead('date', offset = 1).over(window_2)) \
+        .withColumn('days_in_city', 
+                    F.when(
+                        F.col('dt_of_city_change').isNotNull(), 
+                        F.datediff(F.col('dt_of_city_change'), F.col('date'))
+                        )
+                    .otherwise(F.datediff(F.col('max_msg_date'), F.col('date')))
+                ) \
+        .where('days_in_city >= 1') \
+        .withColumn('rn', F.row_number().over(window_3)) \
+        .where('rn = 1') \
+        .drop('rn') \
         .selectExpr('user_id', 'city as home_city') \
         .persist()
         
@@ -156,6 +160,7 @@ def mart_users(events_geo_df, actual_city_df, home_city_df, travel_city_df, time
 
 def writer(df, output_path):
     return df \
+        .coalesce(4) \
         .write \
         .mode('overwrite') \
         .parquet(f'{output_path}')
