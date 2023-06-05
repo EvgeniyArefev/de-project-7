@@ -5,9 +5,6 @@ from pyspark.sql import SQLContext
 import pyspark.sql.functions as F
 from pyspark.sql.window import Window 
 
-PI = 3.14159265359
-COEF_DEG_RAD = PI / 180
-
 def main():
     path_events = sys.argv[1]
     path_geo_cities = sys.argv[2]
@@ -31,8 +28,8 @@ def cities(path, session):
         .option('header', True) \
         .option('delimiter', ';') \
         .csv(path) \
-        .withColumn('lat_rad', F.regexp_replace('lat', ',', '.') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('lng_rad', F.regexp_replace('lng', ',', '.') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('lat_rad',  F.radians(F.regexp_replace('lat', ',', '.'))) \
+        .withColumn('lng_rad', F.radians(F.regexp_replace('lng', ',', '.'))) \
         .drop('lat', 'lng')
     
     return cities_df
@@ -47,8 +44,8 @@ def events(path, session):
                     "lat", 
                     "lon") \
         .where('lat is not null and lon is not null') \
-        .withColumn('msg_lat_rad', F.col('lat') * F.lit(COEF_DEG_RAD)) \
-        .withColumn('msg_lng_rad', F.col('lon') * F.lit(COEF_DEG_RAD)) \
+        .withColumn('msg_lat_rad', F.radians(F.col('lat'))) \
+        .withColumn('msg_lng_rad', F.radians(F.col('lon'))) \
         .drop('lat', 'lon') \
         .persist()
         
@@ -125,7 +122,7 @@ def mart_zones(events_geo_df):
 
 def writer(df, output_path):
     return df \
-        .repartition(1) \
+        .coalesce(1) \
         .write \
         .mode('overwrite') \
         .parquet(output_path)
