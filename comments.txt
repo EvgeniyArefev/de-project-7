@@ -1,0 +1,14 @@
+Егор, привет!
+
+• У меня не получилось воспользоваться функцией tzwhere, выдавал ошибку. Возможно ты подскажешь как правильно завести эту библиотеку.
+
+Просто для примера:
+!pip install tzwhere
+from tzwhere import tzwhere
+tz = tzwhere.tzwhere().tzNameAt(35.29, -89.66)
+print(tz)
+
+ValueError: setting an array element with a sequence. The requested array has an inhomogeneous shape after 2 dimensions. The detected shape was (1, 2) + inhomogeneous part.
+
+• Правильно понимаю, что persist() необходимо использовать, когда я буду юзать датафрейм как минимум еще 1 раз после создания? 
+• Нужно ли стопать spark сессию в рамках 1го SparkSubmitOperator в DAG? Или она автоматически закрывается после выполнения такси?
