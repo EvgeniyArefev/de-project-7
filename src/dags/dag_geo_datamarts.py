@@ -76,4 +76,4 @@ dm_friends_recomendation = SparkSubmitOperator(
     executor_memory = '1g'
 )
 
-
+dm_users >> dm_zones >> dm_friends_recomendation
